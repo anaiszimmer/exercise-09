@@ -1,0 +1,235 @@
+---
+title: "exercise-09"
+author: "Anais"
+date: "4/1/2022"
+output: html_document
+---
+
+
+* Using the {tidyverse} read_csv() function, load the “Street_et_al_2017.csv” dataset from this URL as a “tibble” named d
+
+```{r setup, include=TRUE}
+library(broom)
+library(tidyverse)
+library(manipulate)
+library(patchwork)
+library(infer)
+
+
+f <- "https://raw.githubusercontent.com/difiore/ada-2022-datasets/main/Street_et_al_2017.csv"
+d <- read_csv(f, col_names = TRUE)
+#view(d)
+
+```
+
+* Do a quick exploratory data analysis where you generate the five-number summary (median, minimum and maximum and 1st and 3rd quartile values), plus mean and standard deviation, for each quantitative variable
+
+```{r}
+
+library (skimr)
+
+skim(d)
+
+```
+
+* From this dataset, plot brain size (ECV) as a function of social group size (Group_size), longevity (Longevity), juvenile period length (Weaning), and reproductive lifespan (Repro_lifespan)
+
+```{r}
+par(mfrow=c(2,2))
+plot(data = d, ECV ~ Group_size)
+plot(data = d, ECV ~ Longevity)
+plot(data = d, ECV ~ Weaning)
+plot(data = d, ECV ~Repro_lifespan)
+
+```
+
+* Derive by hand the ordinary least squares regression coefficients β1 and β0 for ECV as a function of social group size
+
+```{r}
+# removing rows with na
+
+d<-d %>% filter(!is.na(ECV))%>%
+  filter(!is.na(Group_size))
+#view(d)
+(beta1 <- cor(d$ECV, d$Group_size) * (sd(d$ECV) / sd(d$Group_size)))
+(beta0 <- mean(d$ECV) - beta1 * mean(d$Group_size))
+
+```
+
+* Confirm that you get the same results using the lm() function
+
+```{r}
+
+
+# using the lm function
+m <- lm(ECV ~ Group_size, data = d)
+m
+summary(m)
+
+# we get the same results than calculating β1 (2.463) and β0(30.3565) by hand.
+
+```
+
+* Repeat the analysis above for three different major radiations of primates – “catarrhines,” “platyrrhines,” and “strepsirhines”) separately. These are stored in the variable Taxonomic_group.
+* Do your regression coefficients differ among groups? How might you determine this?
+
+```{r}
+
+fitted_models = d %>% 
+  filter(!is.na(ECV))%>%
+  filter(!is.na(Group_size))%>%
+  filter(Taxonomic_group!='Catarrhini+B231')%>%
+  group_by(Taxonomic_group) %>% do(model = lm(ECV ~ Group_size, data =.))
+fitted_models$model
+
+# or using the broom package
+
+#fitted_models %>% tidy(model)#this does not work here - different data frame
+#fitted_models %>% glance(model)
+
+#or full summary for each model
+plyr::l_ply(fitted_models$model, summary, .print = TRUE)
+
+# -> yes the coeficients differ among groups
+
+```
+* For your first regression of ECV on social group size, calculate the standard error for the slope coefficient, the 95% CI, and the p value associated with this coefficient by hand. Also extract this same information from the results of running the lm() function.
+
+```{r}
+
+#SE by hand
+
+n <- nrow(d)
+mean_x <- mean(d$Group_size)
+y_pred = beta0 + beta1*d$Group_size
+y_error = d$ECV - y_pred
+std_err_b1 <- sqrt((sum(y_error^2))/((n-2)*sum((d$Group_size-mean_x)^2)))
+std_err_b1
+
+std_err_b0<-std_err_b1*sqrt(
+  sum((d$Group_size)^2)/n)
+std_err_b0
+
+#t statistic associated with B1… that will be the estimate of the coefficient divided by the standard error of the estimate in the coefficient: B1/(SE of B1)
+
+t_stat<-beta1/std_err_b1
+t_stat
+
+ci_t <- beta1 + c(-1, 1) * qt(1 - 0.05 / 2, df = n - 2) * std_err_b1
+ci_t
+
+#or 
+CI <- confint(m, level = 1 - 0.05)
+CI
+```
+
+
+
+* Use a permutation approach with 1000 permutations to generate a null sampling distribution for the slope coefficient. What is it that you need to permute? What is the p value associated with your original slope coefficient?
+
+with loop or infer
+
+```{r}
+
+#using the infer package
+
+permuted.slope <- d %>%
+  specify(ECV ~ Group_size) %>%
+  hypothesize(null = "independence") %>%
+  generate(reps = 1000, type = "permute") %>%
+  calculate(stat = "slope")
+
+head(permuted.slope) # slopes from first few permutation replicates
+
+hist(permuted.slope$stat, main="Histogram of Permuted\nSlope Values",
+  xlab = "Slope Coefficient")
+
+
+
+# original slope
+original.slope <- lm(data = d, ECV ~ Group_size) %>%
+  tidy(conf.int=TRUE, conf.level=.95) %>%
+  filter(term=="Group_size")
+original.slope # show model results for slope of weight
+
+
+visualize(permuted.slope) +
+  shade_p_value(obs_stat = original.slope$estimate, direction = "two_sided")
+
+
+
+p.value <- permuted.slope %>% 
+  mutate(abs_stat=abs(stat)) %>%
+  summarize(
+    estimate = mean(abs_stat >= abs(pull(original.slope, estimate)))
+  )
+
+p.value
+
+
+```
+
+
+* Use bootstrapping to generate a 95% CI for your estimate of the slope coefficient using both the percentile method and the theory-based method (i.e., based on the standard deviation of the bootstrapped sampling distribution). What is the p value associated with your observed slope coefficient based on each of these methods?
+
+
+```{r}
+
+#generate bootstrap replicate and calculate slope statistic
+
+boot.slope <- d %>%
+   specify(ECV ~ Group_size) %>%
+   generate(reps = 1000, type = "bootstrap") %>%
+   calculate(stat = "slope")
+ 
+ head(boot.slope) 
+ 
+#calculate CI with percentile and SE method
+ 
+alpha <- 0.05
+confidence_level <- 1 - alpha
+p_lower <- alpha/2
+p_upper <- 1 - (alpha/2)
+degrees_of_freedom <- nrow(d) - 2
+critical_value <- qt(p_upper, df = degrees_of_freedom)
+ 
+ boot.slope.summary <- boot.slope %>%
+  summarize(
+    estimate = mean(stat),
+    std.error = sd(stat),
+    # calculate the CI based on the SE and t distribution
+    lower = estimate - std.error * critical_value,
+    upper = estimate + std.error * critical_value,
+    # calculate the CI based on the quantile (percentile)  method
+    boot.lower = quantile(stat, p_lower),
+    boot.upper = quantile(stat, p_upper)
+  )
+
+# show summary of bootstrap sampling distribution
+boot.slope.summary
+
+# or using get_ci()
+
+#percentile method
+get_ci(boot.slope, level = 1 - alpha, type = "percentile")
+#se method
+get_ci(boot.slope, level = 1 - alpha, type = "se", point_estimate = pull(boot.slope.summary,
+    estimate))
+
+
+#p-value associated with the original slope
+(p.value <- boot.slope %>%
+  get_p_value(obs_stat = original.slope$estimate, direction="two_sided"))
+
+# -> p-value=0.946 -> we dont reject the null hypothesis, there is no diference between the original and boostrap slope
+
+visualize(boot.slope) +
+  shade_p_value(obs_stat = original.slope$estimate, direction = "two_sided")
+
+```
+
+
+
+
+
+
